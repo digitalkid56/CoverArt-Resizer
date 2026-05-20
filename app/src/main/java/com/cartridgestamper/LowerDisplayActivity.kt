@@ -35,7 +35,7 @@ class LowerDisplayActivity : ComponentActivity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val command = intent?.getStringExtra(EXTRA_PREVIEW_COMMAND) ?: return
             if (command != COMMAND_UPDATE_LOWER_PREVIEW) return
-            showPreviewFromBytes(intent.getByteArrayExtra(EXTRA_BITMAP_BYTES))
+            showPreviewFromIntent(intent)
         }
     }
 
@@ -135,13 +135,13 @@ class LowerDisplayActivity : ComponentActivity() {
         )
 
         registerReceivers()
-        showPreviewFromBytes(intent.getByteArrayExtra(EXTRA_BITMAP_BYTES))
+        showPreviewFromIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        showPreviewFromBytes(intent.getByteArrayExtra(EXTRA_BITMAP_BYTES))
+        showPreviewFromIntent(intent)
     }
 
     override fun onDestroy() {
@@ -164,9 +164,13 @@ class LowerDisplayActivity : ComponentActivity() {
         }
     }
 
-    private fun showPreviewFromBytes(bytes: ByteArray?) {
-        bytes ?: return
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
+    private fun showPreviewFromIntent(intent: Intent?) {
+        intent ?: return
+        val bitmap = intent.getStringExtra(EXTRA_BITMAP_FILE)
+            ?.let { BitmapFactory.decodeFile(it) }
+            ?: intent.getByteArrayExtra(EXTRA_BITMAP_BYTES)
+                ?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+            ?: return
         val shouldReset = currentBitmap?.let { it.width != bitmap.width || it.height != bitmap.height } ?: true
         currentBitmap = bitmap
         preview.setImageBitmap(bitmap)

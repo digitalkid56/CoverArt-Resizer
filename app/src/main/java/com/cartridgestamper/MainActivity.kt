@@ -105,7 +105,6 @@ import ai.onnxruntime.OrtSession
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -120,7 +119,7 @@ import kotlin.math.roundToInt
 private const val TEMPLATE_ASSET_DIR = "templates"
 private const val MASK_INSET_PIXELS = 5
 private const val GAME_CODE_LOOKUP_PLACEHOLDER = "Looking up code..."
-private const val APP_VERSION_FALLBACK = "v.1.2.3"
+private const val APP_VERSION_FALLBACK = "v.1.2.4"
 private const val LAMA_MODEL_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx?download=true"
 private const val LAMA_MODEL_NAME = "lama_fp32.onnx"
 const val ACTION_LOWER_PREVIEW = "com.cartridgestamper.LOWER_PREVIEW"
@@ -129,11 +128,11 @@ const val ACTION_LOWER_PREVIEW_TAPPED = "com.cartridgestamper.LOWER_PREVIEW_TAPP
 const val ACTION_LOWER_PREVIEW_GESTURE = "com.cartridgestamper.LOWER_PREVIEW_GESTURE"
 const val EXTRA_PREVIEW_COMMAND = "preview_command"
 const val EXTRA_BITMAP_BYTES = "bitmap_bytes"
+const val EXTRA_BITMAP_FILE = "bitmap_file"
 const val EXTRA_GESTURE_SCALE = "gesture_scale"
 const val EXTRA_GESTURE_DX = "gesture_dx"
 const val EXTRA_GESTURE_DY = "gesture_dy"
 const val COMMAND_UPDATE_LOWER_PREVIEW = "update_lower_preview"
-private const val MAX_LOWER_PREVIEW_BYTES = 850_000
 
 private val AppBackground = Color(0xFF07090D)
 private val PanelBackground = Color(0xFF0B141A)
@@ -889,9 +888,9 @@ private fun launchLowerDisplayPreview(context: Context, bitmap: Bitmap?): String
     val intent = Intent(context, LowerDisplayActivity::class.java).apply {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         bitmap?.let { source ->
-            bitmapBytesUnderLimit(source)?.let { bytes ->
+            writeLowerPreviewFile(context, source)?.let { filePath ->
                 putExtra(EXTRA_PREVIEW_COMMAND, COMMAND_UPDATE_LOWER_PREVIEW)
-                putExtra(EXTRA_BITMAP_BYTES, bytes)
+                putExtra(EXTRA_BITMAP_FILE, filePath)
             }
         }
     }
@@ -919,37 +918,31 @@ private fun closeLowerDisplayPreview(context: Context) {
 }
 
 private fun sendLowerPreviewUpdate(context: Context, bitmap: Bitmap) {
-    val bytes = bitmapBytesUnderLimit(bitmap) ?: return
+    val filePath = writeLowerPreviewFile(context, bitmap) ?: return
     context.sendBroadcast(
         Intent(ACTION_LOWER_PREVIEW).apply {
             setPackage(context.packageName)
             putExtra(EXTRA_PREVIEW_COMMAND, COMMAND_UPDATE_LOWER_PREVIEW)
-            putExtra(EXTRA_BITMAP_BYTES, bytes)
+            putExtra(EXTRA_BITMAP_FILE, filePath)
         }
     )
 }
 
-private fun bitmapBytesUnderLimit(bitmap: Bitmap): ByteArray? {
-    var scale = 1.0f
-    while (scale >= 0.48f) {
-        val source = if (scale < 0.999f) {
-            Bitmap.createScaledBitmap(
-                bitmap,
-                (bitmap.width * scale).roundToInt().coerceAtLeast(1),
-                (bitmap.height * scale).roundToInt().coerceAtLeast(1),
-                true
-            )
-        } else {
-            bitmap
+private fun writeLowerPreviewFile(context: Context, bitmap: Bitmap): String? {
+    return runCatching {
+        val dir = File(context.cacheDir, "lower-display-preview").apply { mkdirs() }
+        val file = File(dir, "preview-${System.nanoTime()}.png")
+        FileOutputStream(file).use { output ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
         }
-        val stream = ByteArrayOutputStream()
-        source.compress(Bitmap.CompressFormat.PNG, 100, stream)
-        if (source !== bitmap) source.recycle()
-        val bytes = stream.toByteArray()
-        if (bytes.size <= MAX_LOWER_PREVIEW_BYTES) return bytes
-        scale -= 0.12f
-    }
-    return null
+        dir.listFiles()
+            ?.sortedByDescending { it.lastModified() }
+            ?.drop(8)
+            ?.forEach { it.delete() }
+        file.absolutePath
+    }.onFailure {
+        Log.e("CartridgeStamper", "Lower preview cache write failed", it)
+    }.getOrNull()
 }
 
 @Composable
