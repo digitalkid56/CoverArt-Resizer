@@ -1,4 +1,4 @@
-# Cartridge Stamper (Android / Kotlin)
+# Cartridge Stamper
 
 UI/UX prototype for an AYN Thor-optimized cover-art stamping workflow.
 
