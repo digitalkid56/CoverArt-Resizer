@@ -119,7 +119,7 @@ import kotlin.math.roundToInt
 private const val TEMPLATE_ASSET_DIR = "templates"
 private const val MASK_INSET_PIXELS = 5
 private const val GAME_CODE_LOOKUP_PLACEHOLDER = "Looking up code..."
-private const val APP_VERSION_FALLBACK = "v.1.3.0"
+private const val APP_VERSION_FALLBACK = "v.1.4.0"
 private const val LAMA_MODEL_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx?download=true"
 private const val LAMA_MODEL_NAME = "lama_fp32.onnx"
 const val ACTION_LOWER_PREVIEW = "com.cartridgestamper.LOWER_PREVIEW"
@@ -417,7 +417,7 @@ private fun StamperScreen() {
 
         val width = templateBitmap?.width ?: cover.width
         val height = templateBitmap?.height ?: cover.height
-        val artworkWindow = template.artworkWindow(width, height)
+        val artworkWindow = template.artworkWindow(context, width, height)
         if (artworkWindow == null) {
             outpaintStatus = "No template artwork window"
             return@LaunchedEffect
@@ -505,7 +505,9 @@ private fun StamperScreen() {
         val drawOutpaintArtwork = outpaintArtwork
         delay(90)
         previewBitmap = withContext(Dispatchers.Default) {
+            val templateMask = templateAsset?.let { decodeTemplateMask(context, it) }
             renderComposite(
+                context = context,
                 templateAsset = templateAsset,
                 template = templateAsset?.let {
                     prepareTemplateBitmap(
@@ -526,6 +528,7 @@ private fun StamperScreen() {
                         gameCodeOffsetY = drawGameCodeOffsetY
                     )
                 },
+                artworkMask = templateMask,
                 cover = coverAsset?.let { decodeBitmap(context, it.source) },
                 extraCover = topLayerAsset?.let { decodeBitmap(context, it.source) },
                 offsetXPx = drawOffsetX,
@@ -1565,7 +1568,9 @@ private data class TemplateAsset(
     val label: String,
     val assetPath: String,
     val systemName: String,
-    val systemFolder: String
+    val systemFolder: String,
+    val templateId: String,
+    val maskPath: String? = null
 ) {
     fun defaultMediaDirectory(mediaFolderKind: MediaFolderKind): File? = esDeMediaDirectory(systemFolder, mediaFolderKind)
 
@@ -1578,7 +1583,7 @@ private data class TemplateAsset(
         get() = systemFolder == "n3ds" || systemFolder == "nds"
 
     val supportsGameCodeGeneration: Boolean
-        get() = (systemFolder == "n3ds" && label.contains("w/ Code", ignoreCase = true)) ||
+        get() = (systemFolder == "n3ds" && (templateId.contains("sticker", ignoreCase = true) || label.contains("w/ Code", ignoreCase = true))) ||
             systemFolder == "nds" ||
             systemFolder == "switch"
 }
@@ -1824,23 +1829,49 @@ private fun TemplateAsset.formatGameProductCode(gameId: String, regionSuffix: St
 }
 
 private fun loadTemplateAssets(context: Context): List<TemplateAsset> {
-    return context.assets.list(TEMPLATE_ASSET_DIR)
+    val entries = context.assets.list(TEMPLATE_ASSET_DIR)
         .orEmpty()
         .asSequence()
-        .filter { it.isSupportedImageName() }
-        .filterNot { it.contains("Official Nintendo Seal", ignoreCase = true) || it.contains("Nintendo_Official_Seal", ignoreCase = true) }
-        .filterNot { it.contains("nintendo-logo-vector", ignoreCase = true) }
-        .distinctBy { templateMetadata(it).label }
-        .sortedWith(compareBy({ templateMetadata(it).label.lowercase(Locale.US) }, { it.lowercase(Locale.US) }))
-        .map {
-            val metadata = templateMetadata(it)
-            TemplateAsset(
-                label = metadata.label,
-                assetPath = "$TEMPLATE_ASSET_DIR/$it",
-                systemName = metadata.systemName,
-                systemFolder = metadata.systemFolder
-            )
+
+    return entries
+        .flatMap { entry ->
+            val entryPath = "$TEMPLATE_ASSET_DIR/$entry"
+            val children = runCatching { context.assets.list(entryPath).orEmpty().toSet() }.getOrDefault(emptySet())
+            when {
+                "overlay.png" in children -> {
+                    val metadata = templateMetadata(entry)
+                    sequenceOf(
+                        TemplateAsset(
+                            label = metadata.label,
+                            assetPath = "$entryPath/overlay.png",
+                            systemName = metadata.systemName,
+                            systemFolder = metadata.systemFolder,
+                            templateId = entry,
+                            maskPath = "$entryPath/mask.png".takeIf { "mask.png" in children }
+                        )
+                    )
+                }
+
+                entry.isSupportedImageName() &&
+                    !entry.contains("Official Nintendo Seal", ignoreCase = true) &&
+                    !entry.contains("Nintendo_Official_Seal", ignoreCase = true) &&
+                    !entry.contains("nintendo-logo-vector", ignoreCase = true) -> {
+                    val metadata = templateMetadata(entry)
+                    sequenceOf(
+                        TemplateAsset(
+                            label = metadata.label,
+                            assetPath = entryPath,
+                            systemName = metadata.systemName,
+                            systemFolder = metadata.systemFolder,
+                            templateId = entry.removeImageExtension().sanitizeFilePart()
+                        )
+                    )
+                }
+
+                else -> emptySequence()
+            }
         }
+        .sortedWith(compareBy({ it.label.lowercase(Locale.US) }, { it.templateId.lowercase(Locale.US) }))
         .toList()
 }
 
@@ -1865,8 +1896,92 @@ private data class TemplateMetadata(
     val systemFolder: String
 )
 
-private fun templateMetadata(fileName: String): TemplateMetadata {
-    val lower = fileName.lowercase(Locale.US)
+private data class TemplateSystemRule(
+    val id: String,
+    val systemFolder: String,
+    val baseLabel: String,
+    val systemName: String
+) {
+    fun matches(identifier: String): Boolean {
+        return identifier == id ||
+            identifier.startsWith("${id}_") ||
+            identifier.startsWith("${id}-")
+    }
+}
+
+private val TemplateSystemRules = listOf(
+    TemplateSystemRule("amiga1200", "amiga1200", "Amiga 1200", "Commodore Amiga 1200"),
+    TemplateSystemRule("amiga600", "amiga600", "Amiga 600", "Commodore Amiga 600"),
+    TemplateSystemRule("amiga", "amiga", "Amiga", "Commodore Amiga"),
+    TemplateSystemRule("amstradcpc", "amstradcpc", "Amstrad CPC", "Amstrad CPC"),
+    TemplateSystemRule("arcade", "arcade", "Arcade", "Arcade"),
+    TemplateSystemRule("atomiswave", "atomiswave", "Atomiswave", "Sammy Atomiswave"),
+    TemplateSystemRule("cps1", "cps1", "Capcom Play System", "Capcom Play System"),
+    TemplateSystemRule("cps2", "cps2", "Capcom Play System II", "Capcom Play System II"),
+    TemplateSystemRule("cps3", "cps3", "Capcom Play System III", "Capcom Play System III"),
+    TemplateSystemRule("dos", "dos", "DOS", "DOS"),
+    TemplateSystemRule("dreamcast", "dreamcast", "Dreamcast", "Sega Dreamcast"),
+    TemplateSystemRule("fba", "fba", "FinalBurn Alpha", "FinalBurn Alpha"),
+    TemplateSystemRule("fbneo", "fbneo", "FinalBurn Neo", "FinalBurn Neo"),
+    TemplateSystemRule("fds", "fds", "Famicom Disk System", "Famicom Disk System"),
+    TemplateSystemRule("gamegear", "gamegear", "Game Gear", "Sega Game Gear"),
+    TemplateSystemRule("gba", "gba", "Game Boy Advance", "Game Boy Advance"),
+    TemplateSystemRule("gbc", "gbc", "Game Boy Color", "Game Boy Color"),
+    TemplateSystemRule("gb", "gb", "Game Boy", "Game Boy"),
+    TemplateSystemRule("gc", "gc", "Nintendo GameCube", "Nintendo GameCube"),
+    TemplateSystemRule("generic_dvd", "generic_dvd", "Generic DVD", "Generic DVD"),
+    TemplateSystemRule("genesis", "genesis", "Sega Genesis", "Sega Genesis"),
+    TemplateSystemRule("mame", "mame", "MAME", "MAME"),
+    TemplateSystemRule("mastersystem", "mastersystem", "Master System", "Sega Master System"),
+    TemplateSystemRule("megacd", "megacd", "Mega-CD", "Sega Mega-CD"),
+    TemplateSystemRule("msx", "msx", "MSX", "MSX"),
+    TemplateSystemRule("n3ds", "n3ds", "Nintendo 3DS", "Nintendo 3DS"),
+    TemplateSystemRule("n64", "n64", "Nintendo 64", "Nintendo 64"),
+    TemplateSystemRule("ndsi", "nds", "Nintendo DSi", "Nintendo DS"),
+    TemplateSystemRule("nds", "nds", "Nintendo DS", "Nintendo DS"),
+    TemplateSystemRule("nes", "nes", "NES", "Nintendo Entertainment System"),
+    TemplateSystemRule("pc", "pc", "PC", "PC"),
+    TemplateSystemRule("pico8", "pico8", "PICO-8", "PICO-8"),
+    TemplateSystemRule("pokemini", "pokemini", "Pokemon Mini", "Pokemon Mini"),
+    TemplateSystemRule("ps2", "ps2", "PlayStation 2", "Sony PlayStation 2"),
+    TemplateSystemRule("ps3", "ps3", "PlayStation 3", "Sony PlayStation 3"),
+    TemplateSystemRule("pspminis", "pspminis", "PlayStation Portable Minis", "Sony PlayStation Portable Minis"),
+    TemplateSystemRule("psp", "psp", "PlayStation Portable UMD", "Sony PlayStation Portable"),
+    TemplateSystemRule("psvita", "psvita", "PlayStation Vita", "Sony PlayStation Vita"),
+    TemplateSystemRule("psx", "psx", "PlayStation", "Sony PlayStation"),
+    TemplateSystemRule("saturn", "saturn", "Saturn", "Sega Saturn"),
+    TemplateSystemRule("sega32x", "sega32x", "Sega 32X", "Sega 32X"),
+    TemplateSystemRule("segacd", "segacd", "Sega CD", "Sega CD"),
+    TemplateSystemRule("sg-1000", "sg1000", "SG-1000", "Sega SG-1000"),
+    TemplateSystemRule("sg1000", "sg1000", "SG-1000", "Sega SG-1000"),
+    TemplateSystemRule("snesmsu1", "snesmsu1", "Super Nintendo MSU-1", "Super Nintendo MSU-1"),
+    TemplateSystemRule("snes", "snes", "Super Nintendo", "Super Nintendo"),
+    TemplateSystemRule("steam_screen", "steam", "Steam Screen", "Steam"),
+    TemplateSystemRule("steam", "steam", "Steam", "Steam"),
+    TemplateSystemRule("supergrafx", "supergrafx", "SuperGrafx", "PC Engine SuperGrafx"),
+    TemplateSystemRule("switch", "switch", "Nintendo Switch", "Nintendo Switch"),
+    TemplateSystemRule("tg16", "tg16", "TurboGrafx-16", "TurboGrafx-16"),
+    TemplateSystemRule("virtualboy", "virtualboy", "Virtual Boy", "Nintendo Virtual Boy"),
+    TemplateSystemRule("wiiu", "wiiu", "Wii U", "Nintendo Wii U"),
+    TemplateSystemRule("wiiware", "wiiware", "WiiWare", "Nintendo WiiWare"),
+    TemplateSystemRule("wii", "wii", "Wii", "Nintendo Wii"),
+    TemplateSystemRule("windows3x", "windows3x", "Windows 3.x", "Windows 3.x"),
+    TemplateSystemRule("windows9x", "windows9x", "Windows 9x", "Windows 9x"),
+    TemplateSystemRule("windows", "windows", "Windows", "Windows")
+)
+
+private fun templateMetadata(templateName: String): TemplateMetadata {
+    val normalized = templateName.removeImageExtension().templateIdentifier()
+    TemplateSystemRules.firstOrNull { it.matches(normalized) }?.let { rule ->
+        val variant = normalized.removePrefix(rule.id).trimStart('_', '-').templateVariantLabel()
+        return TemplateMetadata(
+            label = if (variant.isBlank()) rule.baseLabel else "${rule.baseLabel} ($variant)",
+            systemName = rule.systemName,
+            systemFolder = rule.systemFolder
+        )
+    }
+
+    val lower = templateName.lowercase(Locale.US)
     return when {
         "advance" in lower || Regex("""\bgba\b""").containsMatchIn(lower) ->
             TemplateMetadata("Game Boy Advance", "Game Boy Advance", "gba")
@@ -1901,7 +2016,70 @@ private fun templateMetadata(fileName: String): TemplateMetadata {
         "switch" in lower ->
             TemplateMetadata("Nintendo Switch", "Nintendo Switch", "switch")
         else ->
-            TemplateMetadata(fileName.removeImageExtension().normalizeTemplateName().removeCartridgeWord(), "Custom", fileName.removeImageExtension().sanitizeFilePart())
+            TemplateMetadata(templateName.removeImageExtension().normalizeTemplateName().removeCartridgeWord(), "Custom", templateName.removeImageExtension().sanitizeFilePart())
+    }
+}
+
+private fun String.templateIdentifier(): String {
+    return lowercase(Locale.US)
+        .replace(Regex("""\s+"""), "_")
+        .replace(Regex("""[^a-z0-9_-]+"""), "_")
+        .trim('_', '-')
+}
+
+private fun String.templateVariantLabel(): String {
+    return split('_', '-')
+        .filter { it.isNotBlank() }
+        .map { it.templateVariantTokenLabel() }
+        .joinToString(" ")
+        .normalizeTemplateName()
+}
+
+private fun String.templateVariantTokenLabel(): String {
+    return when (lowercase(Locale.US)) {
+        "alt" -> "Alt"
+        "black" -> "Black"
+        "blacktext" -> "Black Text"
+        "blue" -> "Blue"
+        "cd" -> "CD"
+        "crystal" -> "Crystal"
+        "darkblue" -> "Dark Blue"
+        "dvd" -> "DVD"
+        "ea" -> "EA"
+        "emerald" -> "Emerald"
+        "famicom" -> "Famicom"
+        "firered" -> "FireRed"
+        "gold" -> "Gold"
+        "gray" -> "Gray"
+        "green" -> "Green"
+        "jap" -> "Japan"
+        "leafgreen" -> "LeafGreen"
+        "lesssticker" -> "Less Sticker"
+        "msu1" -> "MSU-1"
+        "nes" -> "NES"
+        "new3ds" -> "New 3DS"
+        "new3dsblack" -> "New 3DS Black"
+        "nocenter" -> "No Center"
+        "nosticker" -> "No Sticker"
+        "orangewhite" -> "Orange White"
+        "orange" -> "Orange"
+        "pink" -> "Pink"
+        "purple" -> "Purple"
+        "red" -> "Red"
+        "ruby" -> "Ruby"
+        "rumble" -> "Rumble"
+        "salmon" -> "Salmon"
+        "sapphire" -> "Sapphire"
+        "screen" -> "Screen"
+        "silver" -> "Silver"
+        "sticker" -> "Sticker"
+        "transparent" -> "Transparent"
+        "usa" -> "USA"
+        "white" -> "White"
+        "whitelogo" -> "White Logo"
+        "whitetext" -> "White Text"
+        "yellow" -> "Yellow"
+        else -> replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
     }
 }
 
@@ -1998,6 +2176,16 @@ private fun decodeTemplateBitmap(context: Context, template: TemplateAsset): Bit
     }.getOrNull()
 }
 
+private fun decodeTemplateMask(context: Context, template: TemplateAsset): Bitmap? {
+    val maskPath = template.maskPath ?: return null
+    return runCatching {
+        val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+        context.assets.open(maskPath).use {
+            BitmapFactory.decodeStream(it, null, options)
+        }
+    }.getOrNull()
+}
+
 
 private val TemplateAsset.usesNintendoSeal: Boolean
     get() = systemFolder == "n3ds" || systemFolder == "nds"
@@ -2005,7 +2193,21 @@ private val TemplateAsset.usesNintendoSeal: Boolean
 private val TemplateAsset.supportsRatingToggle: Boolean
     get() = systemFolder == "nds"
 
-private fun TemplateAsset.artworkWindow(width: Int, height: Int): RectF? {
+private fun TemplateAsset.artworkWindow(context: Context, width: Int, height: Int): RectF? {
+    decodeTemplateMask(context, this)?.let { mask ->
+        val bounds = mask.alphaBounds()
+        if (bounds != null) {
+            val scaleX = width.toFloat() / mask.width.toFloat()
+            val scaleY = height.toFloat() / mask.height.toFloat()
+            return RectF(
+                bounds.left * scaleX,
+                bounds.top * scaleY,
+                bounds.right * scaleX,
+                bounds.bottom * scaleY
+            )
+        }
+    }
+
     fun rect(left: Float, top: Float, right: Float, bottom: Float) = RectF(
         width * left,
         height * top,
@@ -2341,7 +2543,7 @@ private fun drawGameProductCode(
 
 private fun productCodeDrawSpec(bitmap: Bitmap, template: TemplateAsset): ProductCodeDrawSpec? {
     return when {
-        template.systemFolder == "n3ds" && template.label.contains("w/ Code", ignoreCase = true) ->
+        template.systemFolder == "n3ds" && template.supportsGameCodeGeneration ->
             ProductCodeDrawSpec(
                 textRegion = RectF(
                     bitmap.width * 0.204f,
@@ -2558,8 +2760,10 @@ private fun outpaintRequestKey(
 
 
 private fun renderComposite(
+    context: Context,
     templateAsset: TemplateAsset?,
     template: Bitmap?,
+    artworkMask: Bitmap? = null,
     cover: Bitmap?,
     extraCover: Bitmap? = null,
     offsetXPx: Float,
@@ -2583,7 +2787,7 @@ private fun renderComposite(
         val coverLayer = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val coverCanvas = Canvas(coverLayer)
         val coverRect = cover?.coverDrawRect(width, height, offsetXPx, offsetYPx, scalePercent)
-        val artworkWindow = templateAsset?.artworkWindow(width, height)
+        val artworkWindow = templateAsset?.artworkWindow(context, width, height)
         if (outpaintArtwork && artworkWindow != null && coverRect != null && !coverRect.contains(artworkWindow)) {
             outpaintFill?.let { fill ->
                 coverCanvas.drawBitmap(fill, null, artworkWindow, paint)
@@ -2601,7 +2805,8 @@ private fun renderComposite(
             val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
                 xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
             }
-            coverCanvas.drawBitmap(createArtworkMask(template, templateAsset), 0f, 0f, maskPaint)
+            val mask = artworkMask ?: createArtworkMask(template, templateAsset)
+            coverCanvas.drawBitmap(mask, null, RectF(0f, 0f, width.toFloat(), height.toFloat()), maskPaint)
             maskPaint.xfermode = null
         }
 
