@@ -119,7 +119,7 @@ import kotlin.math.roundToInt
 private const val TEMPLATE_ASSET_DIR = "templates"
 private const val MASK_INSET_PIXELS = 5
 private const val GAME_CODE_LOOKUP_PLACEHOLDER = "Looking up code..."
-private const val APP_VERSION_FALLBACK = "v.1.2.4"
+private const val APP_VERSION_FALLBACK = "v.1.3.0"
 private const val LAMA_MODEL_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx?download=true"
 private const val LAMA_MODEL_NAME = "lama_fp32.onnx"
 const val ACTION_LOWER_PREVIEW = "com.cartridgestamper.LOWER_PREVIEW"
@@ -244,6 +244,7 @@ private fun StamperScreen() {
     var gameCodeText by remember { mutableStateOf("") }
     var gameCodeBold by remember { mutableStateOf(false) }
     var gameCodeSizeStep by remember { mutableStateOf(0) }
+    var gameCodeOffsetX by remember { mutableFloatStateOf(0f) }
     var gameCodeOffsetY by remember { mutableFloatStateOf(0f) }
     var gameCodeLookupStatus by remember { mutableStateOf<String?>(null) }
     var gameCodeLookupRequest by remember { mutableStateOf(0) }
@@ -477,7 +478,7 @@ private fun StamperScreen() {
         }
     }
 
-    LaunchedEffect(selectedTemplate?.assetPath, selectedCover?.source?.key, extraLayerEnabled, extraLayerCover?.source?.key, offsetX, offsetY, coverScale, extraLayerOffsetX, extraLayerOffsetY, extraLayerScale, outpaintArtwork, outpaintFill?.key, showGameBoyLogo, show3dsSeal, sealOffsetX, sealOffsetY, sealScale, logoOffsetX, logoOffsetY, logoScale, generateGameCode, gameCodeText, gameCodeBold, gameCodeSizeStep, gameCodeOffsetY) {
+    LaunchedEffect(selectedTemplate?.assetPath, selectedCover?.source?.key, extraLayerEnabled, extraLayerCover?.source?.key, offsetX, offsetY, coverScale, extraLayerOffsetX, extraLayerOffsetY, extraLayerScale, outpaintArtwork, outpaintFill?.key, showGameBoyLogo, show3dsSeal, sealOffsetX, sealOffsetY, sealScale, logoOffsetX, logoOffsetY, logoScale, generateGameCode, gameCodeText, gameCodeBold, gameCodeSizeStep, gameCodeOffsetX, gameCodeOffsetY) {
         val templateAsset = selectedTemplate
         val coverAsset = selectedCover
         val topLayerAsset = extraLayerCover?.takeIf { extraLayerEnabled }
@@ -493,6 +494,7 @@ private fun StamperScreen() {
         val drawLogoScale = logoScale
         val drawGameCodeBold = gameCodeBold
         val drawGameCodeSizeStep = gameCodeSizeStep
+        val drawGameCodeOffsetX = gameCodeOffsetX
         val drawGameCodeOffsetY = gameCodeOffsetY
         val drawOffsetX = offsetX
         val drawOffsetY = offsetY
@@ -520,6 +522,7 @@ private fun StamperScreen() {
                         gameProductCode = activeGameCode,
                         gameCodeBold = drawGameCodeBold,
                         gameCodeSizeStep = drawGameCodeSizeStep,
+                        gameCodeOffsetX = drawGameCodeOffsetX,
                         gameCodeOffsetY = drawGameCodeOffsetY
                     )
                 },
@@ -592,6 +595,7 @@ private fun StamperScreen() {
                 gameCodeText = ""
                 gameCodeBold = false
                 gameCodeSizeStep = 0
+                gameCodeOffsetX = 0f
                 gameCodeOffsetY = 0f
                 gameCodeLookupStatus = null
             }
@@ -750,6 +754,8 @@ private fun StamperScreen() {
                             sizeStep = gameCodeSizeStep,
                             onDecreaseSize = { gameCodeSizeStep = (gameCodeSizeStep - 1).coerceAtLeast(-6) },
                             onIncreaseSize = { gameCodeSizeStep = (gameCodeSizeStep + 1).coerceAtMost(8) },
+                            offsetX = gameCodeOffsetX,
+                            onOffsetXChange = { gameCodeOffsetX = it.roundToInt().toFloat() },
                             offsetY = gameCodeOffsetY,
                             onOffsetYChange = { gameCodeOffsetY = it.roundToInt().toFloat() },
                             lookupStatus = gameCodeLookupStatus,
@@ -1238,6 +1244,8 @@ private fun GameCodeControls(
     sizeStep: Int,
     onDecreaseSize: () -> Unit,
     onIncreaseSize: () -> Unit,
+    offsetX: Float,
+    onOffsetXChange: (Float) -> Unit,
     offsetY: Float,
     onOffsetYChange: (Float) -> Unit,
     lookupStatus: String?,
@@ -1275,6 +1283,7 @@ private fun GameCodeControls(
             )
             TextSymbolButton("+", onIncreaseSize)
         }
+        ControlSlider("Code X", offsetX, -260f..260f, onOffsetXChange)
         ControlSlider("Code Height", offsetY, -220f..220f, onOffsetYChange)
         OutlinedButton(
             onClick = onFindCode,
@@ -2291,11 +2300,12 @@ private fun drawGameProductCode(
     productCode: String,
     bold: Boolean,
     sizeStep: Int,
+    offsetX: Float,
     offsetY: Float
 ) {
     val spec = productCodeDrawSpec(bitmap, template) ?: return
     val textRegion = RectF(spec.textRegion).apply {
-        offset(0f, -bitmap.height * offsetY / 1000f)
+        offset(bitmap.width * offsetX / 1000f, -bitmap.height * offsetY / 1000f)
     }
     val canvas = Canvas(bitmap)
     spec.fillColor?.let { fillColor ->
@@ -2424,6 +2434,7 @@ private fun prepareTemplateBitmap(
     gameProductCode: String? = null,
     gameCodeBold: Boolean = false,
     gameCodeSizeStep: Int = 0,
+    gameCodeOffsetX: Float = 0f,
     gameCodeOffsetY: Float = 0f
 ): Bitmap? {
     val decoded = decodeTemplateBitmap(context, template) ?: return null
@@ -2432,7 +2443,7 @@ private fun prepareTemplateBitmap(
     drawGameBoyNintendoLogoReplacement(context, editable, template, showGameBoyLogo, logoOffsetX, logoOffsetY, logoScale)
 
     if (template.supportsGameCodeGeneration && gameProductCode != null) {
-        drawGameProductCode(editable, template, gameProductCode, gameCodeBold, gameCodeSizeStep, gameCodeOffsetY)
+        drawGameProductCode(editable, template, gameProductCode, gameCodeBold, gameCodeSizeStep, gameCodeOffsetX, gameCodeOffsetY)
     }
 
     if (template.usesNintendoSeal && show3dsSeal) {
