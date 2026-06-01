@@ -62,6 +62,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.OutlinedButton
@@ -70,6 +71,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -119,7 +121,9 @@ import kotlin.math.roundToInt
 private const val TEMPLATE_ASSET_DIR = "templates"
 private const val MASK_INSET_PIXELS = 5
 private const val GAME_CODE_LOOKUP_PLACEHOLDER = "Looking up code..."
-private const val APP_VERSION_FALLBACK = "v.1.5.0"
+private const val APP_VERSION_FALLBACK = "v.1.6.0"
+private const val TEMPLATE_PREFS = "template_preferences"
+private const val HIDDEN_TEMPLATE_IDS = "hidden_template_ids"
 private const val LAMA_MODEL_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx?download=true"
 private const val LAMA_MODEL_NAME = "lama_fp32.onnx"
 const val ACTION_LOWER_PREVIEW = "com.cartridgestamper.LOWER_PREVIEW"
@@ -214,7 +218,11 @@ private fun Canvas.clearGameCubeInnerDiscCutout(width: Int, height: Int) {
 private fun StamperScreen() {
     val context = LocalContext.current
 
-    val templates = remember { loadTemplateAssets(context) }
+    val bundledTemplates = remember { loadTemplateAssets(context) }
+    var hiddenTemplateIds by remember { mutableStateOf(loadHiddenTemplateIds(context)) }
+    val templates = remember(bundledTemplates, hiddenTemplateIds) {
+        bundledTemplates.filterNot { it.templateId in hiddenTemplateIds }
+    }
     var selectedTemplate by remember { mutableStateOf(templates.firstOrNull()) }
     var selectedMediaKind by remember { mutableStateOf(MediaFolderKind.PhysicalMedia) }
     var coverImages by remember { mutableStateOf(emptyList<ImageAsset>()) }
@@ -257,6 +265,12 @@ private fun StamperScreen() {
     var artworkExportBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var status by remember { mutableStateOf("Select a template") }
     val appVersionLabel = remember(context) { appVersionLabel(context) }
+
+    LaunchedEffect(templates) {
+        if (selectedTemplate == null || templates.none { it.templateId == selectedTemplate?.templateId }) {
+            selectedTemplate = templates.firstOrNull()
+        }
+    }
 
     fun loadDefaultCoverFolder(template: TemplateAsset?) {
         val folder = template?.defaultMediaDirectory(selectedMediaKind)
@@ -303,19 +317,6 @@ private fun StamperScreen() {
             extraLayerImages = coverImages
             extraLayerCover = null
             status = image.label
-        }
-    }
-
-    val topLayerFolderLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        uri?.let {
-            persistTreePermission(context, it)
-            extraLayerActiveFolder = "selected top layer folder"
-            extraLayerImages = loadImagesFromTree(context, it)
-            extraLayerCover = extraLayerImages.firstOrNull()
-            extraLayerEnabled = true
-            status = "Loaded ${extraLayerImages.size} top layer images"
         }
     }
 
@@ -500,7 +501,7 @@ private fun StamperScreen() {
     LaunchedEffect(selectedTemplate?.assetPath, selectedCover?.source?.key, extraLayerEnabled, extraLayerCover?.source?.key, offsetX, offsetY, coverScale, extraLayerOffsetX, extraLayerOffsetY, extraLayerScale, showTemplateOverlay, outpaintArtwork, outpaintFill?.key, showGameBoyLogo, show3dsSeal, sealOffsetX, sealOffsetY, sealScale, logoOffsetX, logoOffsetY, logoScale, generateGameCode, gameCodeText, gameCodeBold, gameCodeSizeStep, gameCodeOffsetX, gameCodeOffsetY) {
         val templateAsset = selectedTemplate
         val coverAsset = selectedCover
-        val topLayerAsset = extraLayerCover?.takeIf { extraLayerEnabled }
+        val topLayerAsset: ImageAsset? = null
         val activeGameCode = gameCodeText.normalizeManualGameCode().takeIf { generateGameCode && it.isNotBlank() }
         val validOutpaintFill = outpaintFill?.takeIf { it.key == currentOutpaintKey }?.bitmap
         val drawGameBoyLogo = showGameBoyLogo
@@ -603,7 +604,7 @@ private fun StamperScreen() {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            StepLabel("1", "Select Cartridge")
+            StepLabel("Select Template")
             Text(
                 text = appVersionLabel,
                 style = MaterialTheme.typography.labelMedium,
@@ -645,12 +646,21 @@ private fun StamperScreen() {
                 gameCodeOffsetX = 0f
                 gameCodeOffsetY = 0f
                 gameCodeLookupStatus = null
+            },
+            onDelete = { template ->
+                val updatedHiddenTemplates = hiddenTemplateIds + template.templateId
+                hiddenTemplateIds = updatedHiddenTemplates
+                saveHiddenTemplateIds(context, updatedHiddenTemplates)
+                if (selectedTemplate?.templateId == template.templateId) {
+                    selectedTemplate = bundledTemplates.firstOrNull { it.templateId !in updatedHiddenTemplates }
+                }
+                status = "Removed ${template.label}"
             }
         )
     }
 
     val step2Section: @Composable () -> Unit = {
-        StepLabel("2", "Cover Art Source")
+        StepLabel("Cover Art Source")
         MediaFolderDropdown(
             selected = selectedMediaKind,
             onSelect = {
@@ -684,38 +694,7 @@ private fun StamperScreen() {
     }
 
     val step3Section: @Composable () -> Unit = {
-        StepLabel("3", "Alignment")
-        ToggleRow("Add Layer", extraLayerEnabled) {
-            extraLayerEnabled = it
-            if (it && extraLayerCover == null) {
-                extraLayerCover = extraLayerImages.firstOrNull()
-            }
-        }
-        if (extraLayerEnabled) {
-            Text("Top Layer", style = MaterialTheme.typography.labelMedium, color = HotPink, fontWeight = FontWeight.SemiBold)
-            PathLine("Folder", extraLayerActiveFolder)
-            OutlinedButton(
-                onClick = { topLayerFolderLauncher.launch(null) },
-                modifier = Modifier.fillMaxWidth(),
-                border = BorderStroke(1.dp, Blue)
-            ) {
-                Text("Choose Top Layer Folder")
-            }
-            AssetList(
-                assets = extraLayerImages,
-                selected = extraLayerCover,
-                emptyText = "No top layer media",
-                onSelect = {
-                    extraLayerCover = it
-                    status = "Top Layer: ${it.label}"
-                }
-            )
-            ControlSlider("Layer Scale", extraLayerScale, 5f..220f) { extraLayerScale = it.roundToInt().toFloat() }
-            ControlSlider("Layer X", extraLayerOffsetX, -500f..500f) { extraLayerOffsetX = it.roundToInt().toFloat() }
-            ControlSlider("Layer Y", extraLayerOffsetY, -500f..500f) { extraLayerOffsetY = it.roundToInt().toFloat() }
-            HorizontalDivider(color = Blue.copy(alpha = 0.35f))
-        }
-        Text("Bottom Layer", style = MaterialTheme.typography.labelMedium, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+        StepLabel("Alignment")
         ToggleRow("Show Template", showTemplateOverlay) { showTemplateOverlay = it }
         ControlSlider("Scale", coverScale, 5f..220f) { coverScale = it.roundToInt().toFloat() }
         ControlSlider("X offset", offsetX, -500f..500f) { offsetX = it.roundToInt().toFloat() }
@@ -817,7 +796,7 @@ private fun StamperScreen() {
     }
 
     val step4Section: @Composable () -> Unit = {
-        StepLabel("4", "Output")
+        StepLabel("Output")
         PathLine("Folder", selectedTemplate?.defaultOutputDirectory()?.displayPath().orEmpty())
         Text(
             text = "Exports resized artwork only; template overlay is not included.",
@@ -1104,32 +1083,24 @@ private fun Modifier.drawWorkspaceGrid(): Modifier = drawBehind {
 }
 
 @Composable
-private fun StepLabel(step: String, text: String) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Box(
-            modifier = Modifier
-                .size(24.dp)
-                .background(HotPink, RoundedCornerShape(6.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(step, style = MaterialTheme.typography.labelMedium, color = TextPrimary)
-        }
-        Text(
-            text = text,
-            style = MaterialTheme.typography.titleSmall,
-            color = TextPrimary,
-            fontWeight = FontWeight.SemiBold
-        )
-    }
+private fun StepLabel(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.titleSmall,
+        color = TextPrimary,
+        fontWeight = FontWeight.SemiBold
+    )
 }
 
 @Composable
 private fun TemplateDropdown(
     templates: List<TemplateAsset>,
     selected: TemplateAsset?,
-    onSelect: (TemplateAsset) -> Unit
+    onSelect: (TemplateAsset) -> Unit,
+    onDelete: (TemplateAsset) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var deleteCandidate by remember { mutableStateOf<TemplateAsset?>(null) }
 
     Box(modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(
@@ -1162,26 +1133,59 @@ private fun TemplateDropdown(
                     .verticalScroll(rememberScrollState())
             ) {
                 templates.forEach { template ->
-                    DropdownMenuItem(
-                        text = {
-                            Column {
-                                Text(template.label, color = TextPrimary)
-                                Text(
-                                    text = "${template.systemName} / ${template.systemFolder}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Teal
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .pointerInput(template.templateId) {
+                                detectTapGestures(
+                                    onTap = {
+                                        expanded = false
+                                        onSelect(template)
+                                    },
+                                    onLongPress = {
+                                        deleteCandidate = template
+                                    }
                                 )
                             }
-                        },
-                        colors = MenuDefaults.itemColors(textColor = TextPrimary),
-                        onClick = {
-                            expanded = false
-                            onSelect(template)
-                        }
-                    )
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        Text(template.label, color = TextPrimary)
+                        Text(
+                            text = "${template.systemName} / ${template.systemFolder}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Teal
+                        )
+                    }
                 }
             }
         }
+    }
+
+    deleteCandidate?.let { template ->
+        AlertDialog(
+            onDismissRequest = { deleteCandidate = null },
+            title = { Text("Delete Template", color = TextPrimary) },
+            text = { Text("Remove ${template.label} from the template list?", color = TextSecondary) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteCandidate = null
+                        expanded = false
+                        onDelete(template)
+                    }
+                ) {
+                    Text("Delete", color = HotPink, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteCandidate = null }) {
+                    Text("Cancel", color = Teal)
+                }
+            },
+            containerColor = PanelBackground,
+            titleContentColor = TextPrimary,
+            textContentColor = TextSecondary
+        )
     }
 }
 
@@ -1937,6 +1941,19 @@ private fun loadTemplateAssets(context: Context): List<TemplateAsset> {
         .toList()
 }
 
+private fun loadHiddenTemplateIds(context: Context): Set<String> {
+    return context.getSharedPreferences(TEMPLATE_PREFS, Context.MODE_PRIVATE)
+        .getStringSet(HIDDEN_TEMPLATE_IDS, emptySet())
+        .orEmpty()
+}
+
+private fun saveHiddenTemplateIds(context: Context, hiddenTemplateIds: Set<String>) {
+    context.getSharedPreferences(TEMPLATE_PREFS, Context.MODE_PRIVATE)
+        .edit()
+        .putStringSet(HIDDEN_TEMPLATE_IDS, hiddenTemplateIds)
+        .apply()
+}
+
 private fun appVersionLabel(context: Context): String {
     return runCatching {
         val versionName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -2029,7 +2046,8 @@ private val TemplateSystemRules = listOf(
     TemplateSystemRule("wii", "wii", "Wii", "Nintendo Wii"),
     TemplateSystemRule("windows3x", "windows3x", "Windows 3.x", "Windows 3.x"),
     TemplateSystemRule("windows9x", "windows9x", "Windows 9x", "Windows 9x"),
-    TemplateSystemRule("windows", "windows", "Windows", "Windows")
+    TemplateSystemRule("windows", "windows", "Windows", "Windows"),
+    TemplateSystemRule("x360", "x360", "Xbox 360", "Microsoft Xbox 360")
 )
 
 private fun templateMetadata(templateName: String): TemplateMetadata {
@@ -2140,6 +2158,7 @@ private fun String.templateVariantTokenLabel(): String {
         "white" -> "White"
         "whitelogo" -> "White Logo"
         "whitetext" -> "White Text"
+        "x360" -> "X360"
         "yellow" -> "Yellow"
         else -> replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
     }
