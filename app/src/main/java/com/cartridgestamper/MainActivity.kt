@@ -119,7 +119,7 @@ import kotlin.math.roundToInt
 private const val TEMPLATE_ASSET_DIR = "templates"
 private const val MASK_INSET_PIXELS = 5
 private const val GAME_CODE_LOOKUP_PLACEHOLDER = "Looking up code..."
-private const val APP_VERSION_FALLBACK = "v.1.4.0"
+private const val APP_VERSION_FALLBACK = "v.1.5.0"
 private const val LAMA_MODEL_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx?download=true"
 private const val LAMA_MODEL_NAME = "lama_fp32.onnx"
 const val ACTION_LOWER_PREVIEW = "com.cartridgestamper.LOWER_PREVIEW"
@@ -230,6 +230,7 @@ private fun StamperScreen() {
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
     var coverScale by remember { mutableFloatStateOf(100f) }
+    var showTemplateOverlay by remember { mutableStateOf(true) }
     var outpaintArtwork by remember { mutableStateOf(false) }
     var showGameBoyLogo by remember { mutableStateOf(true) }
     var logoScale by remember { mutableFloatStateOf(100f) }
@@ -253,6 +254,7 @@ private fun StamperScreen() {
     var outpaintProgress by remember { mutableStateOf<OutpaintProgress?>(null) }
     var dualDisplayMode by remember { mutableStateOf(false) }
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var artworkExportBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var status by remember { mutableStateOf("Select a template") }
     val appVersionLabel = remember(context) { appVersionLabel(context) }
 
@@ -287,6 +289,23 @@ private fun StamperScreen() {
         }
     }
 
+    val coverImageLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let {
+            persistReadPermission(context, it)
+            selectedMediaKind = MediaFolderKind.SpecificImage
+            activeCoverFolder = "selected image"
+            val image = imageAssetFromUri(context, it)
+            coverImages = listOf(image)
+            selectedCover = image
+            extraLayerActiveFolder = activeCoverFolder
+            extraLayerImages = coverImages
+            extraLayerCover = null
+            status = image.label
+        }
+    }
+
     val topLayerFolderLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -303,10 +322,10 @@ private fun StamperScreen() {
     val saveAsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("image/png")
     ) { uri ->
-        val bitmap = previewBitmap
+        val bitmap = artworkExportBitmap
         if (uri != null && bitmap != null) {
             writeBitmapToUri(context, bitmap, uri)
-                .onSuccess { status = "Export saved" }
+                .onSuccess { status = "Artwork export saved" }
                 .onFailure { status = it.localizedMessage ?: "Export failed" }
         }
     }
@@ -478,7 +497,7 @@ private fun StamperScreen() {
         }
     }
 
-    LaunchedEffect(selectedTemplate?.assetPath, selectedCover?.source?.key, extraLayerEnabled, extraLayerCover?.source?.key, offsetX, offsetY, coverScale, extraLayerOffsetX, extraLayerOffsetY, extraLayerScale, outpaintArtwork, outpaintFill?.key, showGameBoyLogo, show3dsSeal, sealOffsetX, sealOffsetY, sealScale, logoOffsetX, logoOffsetY, logoScale, generateGameCode, gameCodeText, gameCodeBold, gameCodeSizeStep, gameCodeOffsetX, gameCodeOffsetY) {
+    LaunchedEffect(selectedTemplate?.assetPath, selectedCover?.source?.key, extraLayerEnabled, extraLayerCover?.source?.key, offsetX, offsetY, coverScale, extraLayerOffsetX, extraLayerOffsetY, extraLayerScale, showTemplateOverlay, outpaintArtwork, outpaintFill?.key, showGameBoyLogo, show3dsSeal, sealOffsetX, sealOffsetY, sealScale, logoOffsetX, logoOffsetY, logoScale, generateGameCode, gameCodeText, gameCodeBold, gameCodeSizeStep, gameCodeOffsetX, gameCodeOffsetY) {
         val templateAsset = selectedTemplate
         val coverAsset = selectedCover
         val topLayerAsset = extraLayerCover?.takeIf { extraLayerEnabled }
@@ -502,35 +521,39 @@ private fun StamperScreen() {
         val drawExtraOffsetX = extraLayerOffsetX
         val drawExtraOffsetY = extraLayerOffsetY
         val drawExtraScale = extraLayerScale
+        val drawTemplateOverlay = showTemplateOverlay
         val drawOutpaintArtwork = outpaintArtwork
         delay(90)
-        previewBitmap = withContext(Dispatchers.Default) {
+        val rendered = withContext(Dispatchers.Default) {
             val templateMask = templateAsset?.let { decodeTemplateMask(context, it) }
-            renderComposite(
+            val preparedTemplate = templateAsset?.let {
+                prepareTemplateBitmap(
+                    context = context,
+                    template = it,
+                    showGameBoyLogo = drawGameBoyLogo,
+                    show3dsSeal = draw3dsSeal,
+                    sealOffsetX = drawSealOffsetX,
+                    sealOffsetY = drawSealOffsetY,
+                    sealScale = drawSealScale,
+                    logoOffsetX = drawLogoOffsetX,
+                    logoOffsetY = drawLogoOffsetY,
+                    logoScale = drawLogoScale,
+                    gameProductCode = activeGameCode,
+                    gameCodeBold = drawGameCodeBold,
+                    gameCodeSizeStep = drawGameCodeSizeStep,
+                    gameCodeOffsetX = drawGameCodeOffsetX,
+                    gameCodeOffsetY = drawGameCodeOffsetY
+                )
+            }
+            val coverBitmap = coverAsset?.let { decodeBitmap(context, it.source) }
+            val extraBitmap = topLayerAsset?.let { decodeBitmap(context, it.source) }
+            val preview = renderComposite(
                 context = context,
                 templateAsset = templateAsset,
-                template = templateAsset?.let {
-                    prepareTemplateBitmap(
-                        context = context,
-                        template = it,
-                        showGameBoyLogo = drawGameBoyLogo,
-                        show3dsSeal = draw3dsSeal,
-                        sealOffsetX = drawSealOffsetX,
-                        sealOffsetY = drawSealOffsetY,
-                        sealScale = drawSealScale,
-                        logoOffsetX = drawLogoOffsetX,
-                        logoOffsetY = drawLogoOffsetY,
-                        logoScale = drawLogoScale,
-                        gameProductCode = activeGameCode,
-                        gameCodeBold = drawGameCodeBold,
-                        gameCodeSizeStep = drawGameCodeSizeStep,
-                        gameCodeOffsetX = drawGameCodeOffsetX,
-                        gameCodeOffsetY = drawGameCodeOffsetY
-                    )
-                },
+                template = preparedTemplate,
                 artworkMask = templateMask,
-                cover = coverAsset?.let { decodeBitmap(context, it.source) },
-                extraCover = topLayerAsset?.let { decodeBitmap(context, it.source) },
+                cover = coverBitmap,
+                extraCover = extraBitmap,
                 offsetXPx = drawOffsetX,
                 offsetYPx = drawOffsetY,
                 scalePercent = drawCoverScale,
@@ -538,9 +561,30 @@ private fun StamperScreen() {
                 extraOffsetYPx = drawExtraOffsetY,
                 extraScalePercent = drawExtraScale,
                 outpaintArtwork = drawOutpaintArtwork,
-                outpaintFill = validOutpaintFill
+                outpaintFill = validOutpaintFill,
+                drawTemplateOverlay = drawTemplateOverlay
             )
+            val artwork = renderComposite(
+                context = context,
+                templateAsset = templateAsset,
+                template = preparedTemplate,
+                artworkMask = templateMask,
+                cover = coverBitmap,
+                extraCover = extraBitmap,
+                offsetXPx = drawOffsetX,
+                offsetYPx = drawOffsetY,
+                scalePercent = drawCoverScale,
+                extraOffsetXPx = drawExtraOffsetX,
+                extraOffsetYPx = drawExtraOffsetY,
+                extraScalePercent = drawExtraScale,
+                outpaintArtwork = drawOutpaintArtwork,
+                outpaintFill = validOutpaintFill,
+                drawTemplateOverlay = false
+            )
+            preview to artwork
         }
+        previewBitmap = rendered.first
+        artworkExportBitmap = rendered.second
     }
 
     val step1Section: @Composable () -> Unit = {
@@ -572,10 +616,10 @@ private fun StamperScreen() {
             selected = selectedTemplate,
             onSelect = {
                 selectedTemplate = it
-                selectedMediaKind = MediaFolderKind.PhysicalMedia
                 offsetX = 0f
                 offsetY = 0f
                 coverScale = 100f
+                showTemplateOverlay = true
                 extraLayerEnabled = false
                 extraLayerImages = coverImages
                 extraLayerActiveFolder = activeCoverFolder
@@ -610,10 +654,10 @@ private fun StamperScreen() {
         MediaFolderDropdown(
             selected = selectedMediaKind,
             onSelect = {
-                if (it == MediaFolderKind.CustomFolder) {
-                    coverFolderLauncher.launch(null)
-                } else {
-                    selectedMediaKind = it
+                when (it) {
+                    MediaFolderKind.CustomFolder -> coverFolderLauncher.launch(null)
+                    MediaFolderKind.SpecificImage -> coverImageLauncher.launch(arrayOf("image/*"))
+                    else -> selectedMediaKind = it
                 }
             }
         )
@@ -672,6 +716,7 @@ private fun StamperScreen() {
             HorizontalDivider(color = Blue.copy(alpha = 0.35f))
         }
         Text("Bottom Layer", style = MaterialTheme.typography.labelMedium, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+        ToggleRow("Show Template", showTemplateOverlay) { showTemplateOverlay = it }
         ControlSlider("Scale", coverScale, 5f..220f) { coverScale = it.roundToInt().toFloat() }
         ControlSlider("X offset", offsetX, -500f..500f) { offsetX = it.roundToInt().toFloat() }
         ControlSlider("Y offset", offsetY, -500f..500f) { offsetY = it.roundToInt().toFloat() }
@@ -694,6 +739,7 @@ private fun StamperScreen() {
                 offsetX = 0f
                 offsetY = 0f
                 coverScale = 100f
+                showTemplateOverlay = true
                 extraLayerOffsetX = 0f
                 extraLayerOffsetY = 0f
                 extraLayerScale = 100f
@@ -773,29 +819,36 @@ private fun StamperScreen() {
     val step4Section: @Composable () -> Unit = {
         StepLabel("4", "Output")
         PathLine("Folder", selectedTemplate?.defaultOutputDirectory()?.displayPath().orEmpty())
+        Text(
+            text = "Exports resized artwork only; template overlay is not included.",
+            style = MaterialTheme.typography.labelSmall,
+            color = TextSecondary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
         HorizontalDivider(color = Blue.copy(alpha = 0.55f))
         OutlinedButton(
             onClick = { saveAsLauncher.launch(makeExportName(selectedTemplate, selectedCover)) },
             modifier = Modifier.fillMaxWidth(),
             border = BorderStroke(1.dp, Blue)
         ) {
-            Text("Choose Destination")
+            Text("Choose Artwork Destination")
         }
         Button(
             onClick = {
-                val bitmap = previewBitmap
+                val bitmap = artworkExportBitmap
                 val template = selectedTemplate
                 if (bitmap == null || template == null) {
                     status = "Nothing to export"
                 } else {
                     exportToDefaultFolder(context, bitmap, template, selectedCover)
-                        .onSuccess { status = "Exported ${it.name}" }
+                        .onSuccess { status = "Exported artwork ${it.name}" }
                         .onFailure { status = it.localizedMessage ?: "Export failed" }
                 }
             },
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Export PNG")
+            Text("Export Artwork PNG")
         }
         Text(
             text = status,
@@ -1552,16 +1605,25 @@ private fun EmptyPreview() {
 private enum class MediaFolderKind(val label: String, val directoryName: String?) {
     PhysicalMedia("Physical Media", "physicalmedia"),
     Covers("Covers", "covers"),
+    SpecificImage("Specific Image", null),
     CustomFolder("Specific Folder", null);
 
     val isDefaultSource: Boolean
         get() = directoryName != null
 
     val menuDetail: String
-        get() = directoryName?.let { "downloaded_media/<system>/$it" } ?: "Choose a specific folder"
+        get() = when (this) {
+            SpecificImage -> "Choose one artwork file"
+            CustomFolder -> "Choose a specific folder"
+            else -> "downloaded_media/<system>/$directoryName"
+        }
 
     val selectedDetail: String
-        get() = directoryName?.let { "ES-DE / $it" } ?: "Custom folder"
+        get() = when (this) {
+            SpecificImage -> "Single image"
+            CustomFolder -> "Custom folder"
+            else -> "ES-DE / $directoryName"
+        }
 }
 
 private data class TemplateAsset(
@@ -2146,6 +2208,14 @@ private fun loadImagesFromTree(context: Context, treeUri: Uri): List<ImageAsset>
             )
         }
         .toList()
+}
+
+private fun imageAssetFromUri(context: Context, uri: Uri): ImageAsset {
+    return ImageAsset(
+        label = queryDisplayName(context, uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "Cover art",
+        detail = "selected image",
+        source = ImageSource.UriSource(uri)
+    )
 }
 
 private fun String.isSupportedImageName(): Boolean {
@@ -2774,6 +2844,7 @@ private fun renderComposite(
     extraScalePercent: Float = 100f,
     outpaintArtwork: Boolean,
     outpaintFill: Bitmap? = null,
+    drawTemplateOverlay: Boolean = true,
     blockCenterCutout: Boolean = false
 ): Bitmap? {
     val width = template?.width ?: cover?.width ?: extraCover?.width ?: return null
@@ -2816,7 +2887,7 @@ private fun renderComposite(
         canvas.drawBitmap(coverLayer, 0f, 0f, paint)
     }
 
-    if (template != null) {
+    if (template != null && drawTemplateOverlay) {
         canvas.drawBitmap(template, null, RectF(0f, 0f, width.toFloat(), height.toFloat()), paint)
     }
 
