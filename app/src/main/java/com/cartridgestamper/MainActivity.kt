@@ -121,10 +121,11 @@ import kotlin.math.roundToInt
 private const val TEMPLATE_ASSET_DIR = "templates"
 private const val MASK_INSET_PIXELS = 5
 private const val GAME_CODE_LOOKUP_PLACEHOLDER = "Looking up code..."
-private const val APP_VERSION_FALLBACK = "v.1.6.2"
-private const val EXPORT_IMAGE_SCALE = 1.5f
+private const val APP_VERSION_FALLBACK = "v.1.6.3"
+private const val EXPORT_IMAGE_SCALE = 3f
 private const val TEMPLATE_PREFS = "template_preferences"
 private const val HIDDEN_TEMPLATE_IDS = "hidden_template_ids"
+private const val SELECTED_TEMPLATE_ID = "selected_template_id"
 private const val LAMA_MODEL_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx?download=true"
 private const val LAMA_MODEL_NAME = "lama_fp32.onnx"
 const val ACTION_LOWER_PREVIEW = "com.cartridgestamper.LOWER_PREVIEW"
@@ -196,7 +197,8 @@ private fun StamperScreen() {
     val templates = remember(bundledTemplates, hiddenTemplateIds) {
         bundledTemplates.filterNot { it.templateId in hiddenTemplateIds }
     }
-    var selectedTemplate by remember { mutableStateOf(templates.firstOrNull()) }
+    val savedTemplateId = remember(context) { loadSelectedTemplateId(context) }
+    var selectedTemplate by remember { mutableStateOf(templates.preferredTemplate(savedTemplateId)) }
     var selectedMediaKind by remember { mutableStateOf(MediaFolderKind.PhysicalMedia) }
     var coverImages by remember { mutableStateOf(emptyList<ImageAsset>()) }
     var selectedCover by remember { mutableStateOf<ImageAsset?>(null) }
@@ -241,7 +243,11 @@ private fun StamperScreen() {
 
     LaunchedEffect(templates) {
         if (selectedTemplate == null || templates.none { it.templateId == selectedTemplate?.templateId }) {
-            selectedTemplate = templates.firstOrNull()
+            val nextTemplate = templates.preferredTemplate(loadSelectedTemplateId(context))
+            selectedTemplate = nextTemplate
+            saveSelectedTemplateId(context, nextTemplate?.templateId)
+        } else if (loadSelectedTemplateId(context) != selectedTemplate?.templateId) {
+            saveSelectedTemplateId(context, selectedTemplate?.templateId)
         }
     }
 
@@ -579,6 +585,7 @@ private fun StamperScreen() {
             selected = selectedTemplate,
             onSelect = {
                 selectedTemplate = it
+                saveSelectedTemplateId(context, it.templateId)
                 offsetX = 0f
                 offsetY = 0f
                 coverScale = 100f
@@ -615,6 +622,7 @@ private fun StamperScreen() {
                 saveHiddenTemplateIds(context, updatedHiddenTemplates)
                 if (selectedTemplate?.templateId == template.templateId) {
                     selectedTemplate = bundledTemplates.firstOrNull { it.templateId !in updatedHiddenTemplates }
+                    saveSelectedTemplateId(context, selectedTemplate?.templateId)
                 }
                 status = "Removed ${template.label}"
             }
@@ -761,7 +769,7 @@ private fun StamperScreen() {
         StepLabel("Output")
         PathLine("Folder", selectedTemplate?.defaultOutputDirectory()?.displayPath().orEmpty())
         Text(
-            text = "Exports image-only PNG at 1.5x source size; templates and masks are not included.",
+            text = "Exports image-only PNG at 3x source size; templates and masks are not included.",
             style = MaterialTheme.typography.labelSmall,
             color = TextSecondary,
             maxLines = 2,
@@ -1909,11 +1917,33 @@ private fun loadHiddenTemplateIds(context: Context): Set<String> {
         .orEmpty()
 }
 
+private fun loadSelectedTemplateId(context: Context): String? {
+    return context.getSharedPreferences(TEMPLATE_PREFS, Context.MODE_PRIVATE)
+        .getString(SELECTED_TEMPLATE_ID, null)
+}
+
 private fun saveHiddenTemplateIds(context: Context, hiddenTemplateIds: Set<String>) {
     context.getSharedPreferences(TEMPLATE_PREFS, Context.MODE_PRIVATE)
         .edit()
         .putStringSet(HIDDEN_TEMPLATE_IDS, hiddenTemplateIds)
         .apply()
+}
+
+private fun saveSelectedTemplateId(context: Context, templateId: String?) {
+    context.getSharedPreferences(TEMPLATE_PREFS, Context.MODE_PRIVATE)
+        .edit()
+        .apply {
+            if (templateId == null) {
+                remove(SELECTED_TEMPLATE_ID)
+            } else {
+                putString(SELECTED_TEMPLATE_ID, templateId)
+            }
+        }
+        .apply()
+}
+
+private fun List<TemplateAsset>.preferredTemplate(templateId: String?): TemplateAsset? {
+    return firstOrNull { it.templateId == templateId } ?: firstOrNull()
 }
 
 private fun appVersionLabel(context: Context): String {
