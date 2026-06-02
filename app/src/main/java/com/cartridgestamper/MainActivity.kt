@@ -121,8 +121,8 @@ import kotlin.math.roundToInt
 private const val TEMPLATE_ASSET_DIR = "templates"
 private const val MASK_INSET_PIXELS = 5
 private const val GAME_CODE_LOOKUP_PLACEHOLDER = "Looking up code..."
-private const val APP_VERSION_FALLBACK = "v.1.6.1"
-private const val EXPORT_BITMAP_SCALE = 1.25f
+private const val APP_VERSION_FALLBACK = "v.1.6.2"
+private const val EXPORT_IMAGE_SCALE = 1.5f
 private const val TEMPLATE_PREFS = "template_preferences"
 private const val HIDDEN_TEMPLATE_IDS = "hidden_template_ids"
 private const val LAMA_MODEL_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx?download=true"
@@ -171,34 +171,6 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 }
-
-
-private fun Bitmap.toCocoonSquareIconCanvas(
-    canvasSize: Int = 1024,
-    visibleHeightRatio: Float = 0.98f
-): Bitmap {
-    if (width == canvasSize && height == canvasSize) return this
-
-    val output = Bitmap.createBitmap(canvasSize, canvasSize, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(output)
-    canvas.drawColor(AndroidColor.TRANSPARENT)
-
-    val maxHeight = canvasSize * visibleHeightRatio
-    val maxWidth = canvasSize * 0.98f
-    val scale = minOf(maxWidth / width.toFloat(), maxHeight / height.toFloat())
-
-    val drawWidth = width * scale
-    val drawHeight = height * scale
-    val left = (canvasSize - drawWidth) / 2f
-    val top = (canvasSize - drawHeight) / 2f
-
-    val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
-    canvas.drawBitmap(this, null, RectF(left, top, left + drawWidth, top + drawHeight), paint)
-
-    return output
-}
-
-
 
 private fun Canvas.clearGameCubeInnerDiscCutout(width: Int, height: Int) {
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -566,24 +538,13 @@ private fun StamperScreen() {
                 outpaintFill = validOutpaintFill,
                 drawTemplateOverlay = drawTemplateOverlay
             )
-            val artwork = renderComposite(
-                context = context,
-                templateAsset = templateAsset,
-                template = preparedTemplate,
-                artworkMask = templateMask,
-                cover = coverBitmap,
-                extraCover = extraBitmap,
+            val artwork = coverBitmap?.renderImageOnlyExport(
                 offsetXPx = drawOffsetX,
                 offsetYPx = drawOffsetY,
                 scalePercent = drawCoverScale,
-                extraOffsetXPx = drawExtraOffsetX,
-                extraOffsetYPx = drawExtraOffsetY,
-                extraScalePercent = drawExtraScale,
-                outpaintArtwork = drawOutpaintArtwork,
-                outpaintFill = validOutpaintFill,
-                drawTemplateOverlay = false
+                exportScale = EXPORT_IMAGE_SCALE
             )
-            preview to artwork?.scaledForExport(EXPORT_BITMAP_SCALE)
+            preview to artwork
         }
         previewBitmap = rendered.first
         artworkExportBitmap = rendered.second
@@ -800,7 +761,7 @@ private fun StamperScreen() {
         StepLabel("Output")
         PathLine("Folder", selectedTemplate?.defaultOutputDirectory()?.displayPath().orEmpty())
         Text(
-            text = "Exports resized artwork only; template overlay is not included.",
+            text = "Exports image-only PNG at 1.5x source size; templates and masks are not included.",
             style = MaterialTheme.typography.labelSmall,
             color = TextSecondary,
             maxLines = 2,
@@ -2832,11 +2793,29 @@ private fun Bitmap.coverDrawRect(
     return RectF(left, top, left + scaledWidth, top + scaledHeight)
 }
 
-private fun Bitmap.scaledForExport(scale: Float): Bitmap {
-    if (scale == 1f) return this
-    val targetWidth = (width * scale).roundToInt().coerceAtLeast(1)
-    val targetHeight = (height * scale).roundToInt().coerceAtLeast(1)
-    return Bitmap.createScaledBitmap(this, targetWidth, targetHeight, true)
+private fun Bitmap.renderImageOnlyExport(
+    offsetXPx: Float,
+    offsetYPx: Float,
+    scalePercent: Float,
+    exportScale: Float
+): Bitmap {
+    val targetWidth = (width * exportScale).roundToInt().coerceAtLeast(1)
+    val targetHeight = (height * exportScale).roundToInt().coerceAtLeast(1)
+    val drawScale = exportScale * (scalePercent / 100f)
+    val drawWidth = width * drawScale
+    val drawHeight = height * drawScale
+    val left = (targetWidth - drawWidth) / 2f + (offsetXPx * exportScale)
+    val top = (targetHeight - drawHeight) / 2f - (offsetYPx * exportScale)
+    val output = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(output)
+    canvas.drawColor(AndroidColor.TRANSPARENT, PorterDuff.Mode.CLEAR)
+    canvas.drawBitmap(
+        this,
+        null,
+        RectF(left, top, left + drawWidth, top + drawHeight),
+        Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+    )
+    return output
 }
 
 private fun outpaintRequestKey(
@@ -3647,8 +3626,7 @@ private fun exportToDefaultFolder(
     outputDirectory.mkdirs()
     val outputFile = File(outputDirectory, makeExportName(template, cover))
     FileOutputStream(outputFile).use {
-        val cocoonReadyBitmap = bitmap.toCocoonSquareIconCanvas()
-        cocoonReadyBitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
     }
     MediaScannerConnection.scanFile(context, arrayOf(outputFile.absolutePath), arrayOf("image/png"), null)
     outputFile
@@ -3656,8 +3634,7 @@ private fun exportToDefaultFolder(
 
 private fun writeBitmapToUri(context: Context, bitmap: Bitmap, uri: Uri): Result<Unit> = runCatching {
     context.contentResolver.openOutputStream(uri)?.use {
-        val cocoonReadyBitmap = bitmap.toCocoonSquareIconCanvas()
-        cocoonReadyBitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
     } ?: error("Could not open export destination")
 }
 
