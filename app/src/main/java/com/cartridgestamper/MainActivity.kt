@@ -121,7 +121,8 @@ import kotlin.math.roundToInt
 private const val TEMPLATE_ASSET_DIR = "templates"
 private const val MASK_INSET_PIXELS = 5
 private const val GAME_CODE_LOOKUP_PLACEHOLDER = "Looking up code..."
-private const val APP_VERSION_FALLBACK = "v.1.6.0"
+private const val APP_VERSION_FALLBACK = "v.1.6.1"
+private const val EXPORT_BITMAP_SCALE = 1.25f
 private const val TEMPLATE_PREFS = "template_preferences"
 private const val HIDDEN_TEMPLATE_IDS = "hidden_template_ids"
 private const val LAMA_MODEL_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx?download=true"
@@ -582,7 +583,7 @@ private fun StamperScreen() {
                 outpaintFill = validOutpaintFill,
                 drawTemplateOverlay = false
             )
-            preview to artwork
+            preview to artwork?.scaledForExport(EXPORT_BITMAP_SCALE)
         }
         previewBitmap = rendered.first
         artworkExportBitmap = rendered.second
@@ -2829,6 +2830,13 @@ private fun Bitmap.coverDrawRect(
     val left = (targetWidth - scaledWidth) / 2f + offsetXPx
     val top = (targetHeight - scaledHeight) / 2f - offsetYPx
     return RectF(left, top, left + scaledWidth, top + scaledHeight)
+}
+
+private fun Bitmap.scaledForExport(scale: Float): Bitmap {
+    if (scale == 1f) return this
+    val targetWidth = (width * scale).roundToInt().coerceAtLeast(1)
+    val targetHeight = (height * scale).roundToInt().coerceAtLeast(1)
+    return Bitmap.createScaledBitmap(this, targetWidth, targetHeight, true)
 }
 
 private fun outpaintRequestKey(
